@@ -8,6 +8,14 @@ Repository: https://github.com/router-for-me/cpa-plugin-jshandler
 
 This plugin's code comes entirely from [router-for-me/CLIProxyAPI#3768](https://github.com/router-for-me/CLIProxyAPI/pull/3768) by [easyatm](https://github.com/easyatm). Respect and thanks for the original contribution.
 
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+Copyright (c) 2026.6-present easyatm
+
+Copyright (c) 2026.6-present Router-For.ME
+
 ## Features
 
 - **Request Interception** (`on_before_request`, `on_after_auth_request`): Modify request payloads and headers before and after credential selection.
