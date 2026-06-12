@@ -27,11 +27,6 @@ func buildPlugin(configYAML []byte, pluginDir string) (pluginapi.Plugin, error) 
 			GitHubRepository: "https://github.com/router-for-me/cpa-plugin-jshandler",
 			ConfigFields: []pluginapi.ConfigField{
 				{
-					Name:        "enabled",
-					Type:        pluginapi.ConfigFieldTypeBoolean,
-					Description: "Enable or disable the JS handler plugin.",
-				},
-				{
 					Name:        "script_paths",
 					Type:        pluginapi.ConfigFieldTypeArray,
 					Description: "List of JS script file paths to load (absolute or relative to plugin directory).",
