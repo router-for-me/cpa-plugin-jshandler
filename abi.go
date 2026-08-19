@@ -97,6 +97,11 @@ type abiStreamChunkInterceptRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
+type abiModelRouteRequest struct {
+	pluginapi.ModelRouteRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 type abiHostLogRequest struct {
 	HostCallbackID string         `json:"host_callback_id,omitempty"`
 	Level          string         `json:"level,omitempty"`
@@ -111,6 +116,7 @@ type abiRegistration struct {
 }
 
 type abiCapabilities struct {
+	ModelRouter            bool `json:"model_router"`
 	RequestInterceptor     bool `json:"request_interceptor"`
 	ResponseInterceptor    bool `json:"response_interceptor"`
 	StreamChunkInterceptor bool `json:"response_stream_interceptor"`
@@ -203,6 +209,13 @@ func handleJSHandlerABIMethod(ctx context.Context, method string, request []byte
 	}
 	defer done()
 	switch method {
+	case pluginabi.MethodModelRoute:
+		var req abiModelRouteRequest
+		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
+			return nil, errDecode
+		}
+		resp, errCall := p.routeModel(ctx, req.ModelRouteRequest, req.HostCallbackID)
+		return abiOKEnvelopeWithError(resp, errCall)
 	case pluginabi.MethodRequestInterceptBefore:
 		var req abiRequestInterceptRequest
 		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
@@ -257,6 +270,7 @@ func handleJSHandlerRegister(request []byte) ([]byte, error) {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata:      plugin.Metadata,
 		Capabilities: abiCapabilities{
+			ModelRouter:            plugin.Capabilities.ModelRouter != nil,
 			RequestInterceptor:     plugin.Capabilities.RequestInterceptor != nil,
 			ResponseInterceptor:    plugin.Capabilities.ResponseInterceptor != nil,
 			StreamChunkInterceptor: plugin.Capabilities.StreamChunkInterceptor != nil,

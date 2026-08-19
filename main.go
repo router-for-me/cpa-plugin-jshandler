@@ -39,6 +39,7 @@ func buildPlugin(configYAML []byte, pluginDir string) (pluginapi.Plugin, error) 
 			},
 		},
 		Capabilities: pluginapi.Capabilities{
+			ModelRouter:            p,
 			RequestInterceptor:     p,
 			ResponseInterceptor:    p,
 			StreamChunkInterceptor: p,

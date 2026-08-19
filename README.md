@@ -21,6 +21,7 @@ Copyright (c) 2026.6-present Router-For.ME
 - **Request Interception** (`on_before_request`, `on_after_auth_request`): Modify request payloads and headers before and after credential selection.
 - **Response Interception** (`on_after_nonstream_response`): Modify non-streaming response bodies and headers.
 - **Stream Chunk Interception** (`on_after_stream_response`): Modify individual streaming chunks with read-only `history_chunks` context.
+- **Model Routing** (`on_route_model`): Decide the execution target (built-in provider + model, or a plugin executor) before model-to-provider resolution and credential selection.
 - **Hot Reload**: Scripts are automatically reloaded when modified on disk.
 - **Execution Timeout**: Configurable timeout prevents infinite loops.
 - **Graceful Degradation**: Original data is preserved on JS execution errors.
@@ -123,6 +124,79 @@ Called after each streaming response chunk is received from upstream.
     "headers": {},
     "chunk": "...",              // Current writable chunk
     "history_chunks": ["..."]    // Read-only frozen array
+}
+```
+
+### `on_route_model(ctx)`
+
+Called before model-to-provider resolution and credential selection. Use it to route
+requests based on any combination of model name, headers, query parameters, and body
+fields. `ctx.model` is the client-requested model name, and `ctx.to_format` is always
+empty because the upstream protocol has not been selected yet.
+
+**ctx structure:**
+```javascript
+{
+    "id": "request-id",
+    "body": "...",                  // Raw client request body string
+    "headers": {},                  // Inbound request headers
+    "query": {},                    // Inbound query parameters
+    "url": "",
+    "model": "deepseek-flash",      // Client-requested model (alias)
+    "requested_model": "deepseek-flash",
+    "protocol": "openai",           // Same as source_format
+    "source_format": "openai",      // Inbound protocol
+    "sourceFormat": "openai",
+    "to_format": "",                // Always empty at routing time
+    "toFormat": "",
+    "stream": false,
+    "available_providers": ["codex", "openai-compatibility"],
+    "metadata": {}
+}
+```
+
+To make a routing decision, set these fields on the returned `ctx`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `handled` | boolean | `true` to claim the routing decision |
+| `target_kind` | string | `"provider"` (built-in provider), `"executor"` or `"self"` (plugin executors) |
+| `target` | string | Provider key for `"provider"` routes (must have credentials registered); plugin id for executor routes |
+| `target_model` | string | Model name (or configured alias) used on the provider path; empty keeps the requested model |
+| `reason` | string | Optional diagnostic reason recorded by the host |
+
+Scripts are evaluated in `script_paths` order and the **first script that returns
+`handled: true` wins**; scripts that do not export `on_route_model`, throw, or leave
+`handled` unset pass the request to the next script. When no script handles the
+request, CLIProxyAPI falls back to its normal model routing. Routing scripts are
+hot-reloaded like all other scripts.
+
+**Example:** route chat-completions requests that carry a `json_schema` response
+format to a Responses-API provider, where the schema is supported natively:
+
+```javascript
+function on_route_model(ctx) {
+  var body;
+  try { body = JSON.parse(ctx.body || '{}'); } catch (e) { return ctx; }
+  if (!body || typeof body !== 'object') return ctx;
+
+  var model = String(ctx.model || '');
+  if (model.indexOf('deepseek') === -1) return ctx;
+  if (/-resp$/.test(model)) return ctx; // already on the Responses-API alias
+
+  var hasSchema =
+    (body.response_format && body.response_format.type === 'json_schema') ||
+    (body.text && body.text.format && body.text.format.type === 'json_schema');
+  if (!hasSchema) return ctx;
+
+  if ((ctx.available_providers || []).indexOf('codex') === -1) return ctx;
+
+  ctx.handled = true;
+  ctx.target_kind = 'provider';
+  ctx.target = 'codex';
+  ctx.target_model = model + '-resp';
+  ctx.reason = 'json_schema reroute';
+  return ctx;
 }
 ```
 
