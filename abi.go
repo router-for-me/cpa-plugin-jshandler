@@ -254,7 +254,7 @@ func handleJSHandlerRegister(request []byte) ([]byte, error) {
 	jsHandlerABIState.shuttingDown = false
 	jsHandlerABIState.Unlock()
 	return abiOKEnvelope(abiRegistration{
-		SchemaVersion: pluginabi.SchemaVersion,
+		SchemaVersion: pluginabi.SchemaVersionStreamChunkOmitHistory,
 		Metadata:      plugin.Metadata,
 		Capabilities: abiCapabilities{
 			RequestInterceptor:     plugin.Capabilities.RequestInterceptor != nil,

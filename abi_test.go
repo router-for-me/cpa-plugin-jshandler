@@ -34,3 +34,25 @@ func TestABIRegistrationUsesHostStreamCapabilityField(t *testing.T) {
 		t.Fatalf("legacy stream_chunk_interceptor field should not be advertised: %v", result.Capabilities)
 	}
 }
+
+func TestABIRegistrationSchemaVersionStreamChunkOmitHistory(t *testing.T) {
+	raw, errMarshal := abiOKEnvelope(abiRegistration{
+		SchemaVersion: 5,
+	})
+	if errMarshal != nil {
+		t.Fatalf("abiOKEnvelope() error = %v", errMarshal)
+	}
+	var envelope abiEnvelope
+	if errUnmarshal := json.Unmarshal(raw, &envelope); errUnmarshal != nil {
+		t.Fatalf("json.Unmarshal(envelope) error = %v", errUnmarshal)
+	}
+	var result struct {
+		SchemaVersion uint32 `json:"schema_version"`
+	}
+	if errUnmarshal := json.Unmarshal(envelope.Result, &result); errUnmarshal != nil {
+		t.Fatalf("json.Unmarshal(result) error = %v", errUnmarshal)
+	}
+	if result.SchemaVersion != 5 {
+		t.Fatalf("SchemaVersion = %d, want 5", result.SchemaVersion)
+	}
+}
