@@ -42,6 +42,16 @@ plugins:
 
 ### Fields
 
+An enabled dynamic-library installation with neither configured script paths nor
+built-in `.js` files registers only request interceptors (hosts require at least
+one capability), with no response or stream interceptors. This avoids host-side copying,
+JSON/base64 encoding and ABI decoding on every stream chunk for a no-op plugin.
+After adding the first built-in script to such an empty installation, reconfigure
+or reload the plugin to register its interceptors. Existing registered scripts
+continue to hot-reload normally. Explicitly configured paths remain subscribed
+even if a file is temporarily missing. Script request/history payload semantics
+are unchanged.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | boolean | `true` | Enable or disable the plugin |
