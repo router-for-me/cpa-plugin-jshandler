@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -23,6 +23,12 @@ type jsHandlerPlugin struct {
 type processedHeaders struct {
 	headers      http.Header
 	clearHeaders []string
+}
+
+type requestTermination struct {
+	statusCode int
+	headers    http.Header
+	body       []byte
 }
 
 var _ pluginapi.RequestInterceptor = (*jsHandlerPlugin)(nil)
@@ -68,13 +74,20 @@ func (p *jsHandlerPlugin) interceptRequest(ctx context.Context, req pluginapi.Re
 		if scriptPath == "" {
 			continue
 		}
-		processed, cleared, errJS := p.applyJSRequestHook(scriptPath, hookName, []byte(body), req.Model, req.SourceFormat, req.ToFormat, headers, hostCallbackID)
+		processed, cleared, termination, errJS := p.applyJSRequestHook(scriptPath, hookName, []byte(body), req.Model, req.SourceFormat, req.ToFormat, headers, hostCallbackID)
 		if errJS != nil {
 			log.Warnf("failed to execute JS request interceptor [%s]: %v", scriptPath, errJS)
 			continue
 		}
 		body = string(processed)
 		clearHeaders = append(clearHeaders, cleared...)
+		if termination != nil {
+			resp.Terminate = true
+			resp.StatusCode = termination.statusCode
+			resp.ResponseHeaders = termination.headers
+			resp.ResponseBody = termination.body
+			break
+		}
 	}
 
 	if len(body) > 0 {
@@ -201,15 +214,15 @@ func (p *jsHandlerPlugin) interceptStreamChunk(ctx context.Context, req pluginap
 	return resp, nil
 }
 
-func (p *jsHandlerPlugin) applyJSRequestHook(scriptPath, hookName string, payloadBytes []byte, model, sourceFormat, toFormat string, headers http.Header, hostCallbackID string) ([]byte, []string, error) {
+func (p *jsHandlerPlugin) applyJSRequestHook(scriptPath, hookName string, payloadBytes []byte, model, sourceFormat, toFormat string, headers http.Header, hostCallbackID string) ([]byte, []string, *requestTermination, error) {
 	program, err := getJSProgram(scriptPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	engine := newJSEngine(newHostJSConsoleLogger(hostCallbackID))
 	if errRun := engine.runProgram(program, p.cfg.Timeout); errRun != nil {
-		return nil, nil, errRun
+		return nil, nil, nil, errRun
 	}
 
 	headersMap := headerToAnyMap(headers)
@@ -230,37 +243,56 @@ func (p *jsHandlerPlugin) applyJSRequestHook(scriptPath, hookName string, payloa
 	jsVal, errCall := engine.callFunction(hookName, p.cfg.Timeout, jsCtx)
 	if errCall != nil {
 		if errors.Is(errCall, ErrFunctionNotFound) {
-			return payloadBytes, nil, nil
+			return payloadBytes, nil, nil, nil
 		}
-		return nil, nil, fmt.Errorf("%s failed for %s: %w", hookName, scriptPath, errCall)
+		return nil, nil, nil, fmt.Errorf("%s failed for %s: %w", hookName, scriptPath, errCall)
 	}
 
 	if jsVal == nil || goja.IsUndefined(jsVal) || goja.IsNull(jsVal) {
-		return payloadBytes, nil, nil
+		return payloadBytes, nil, nil, nil
 	}
 
 	exported := jsVal.Export()
 	if exported == nil {
-		return payloadBytes, nil, nil
+		return payloadBytes, nil, nil, nil
 	}
 
 	var clearHeaders []string
+	var termination *requestTermination
 	if objMap, ok := exported.(map[string]any); ok {
 		if headersVal, exists := objMap["headers"]; exists {
 			clearHeaders = append(clearHeaders, updateHeaderFromAny(headers, headersVal)...)
 		}
+		termination = requestTerminationFromMap(objMap)
 		if bodyVal, exists := objMap["body"]; exists {
 			if bodyStr, okStr := bodyVal.(string); okStr {
-				return []byte(bodyStr), clearHeaders, nil
+				return []byte(bodyStr), clearHeaders, termination, nil
 			}
 		}
 	}
 
 	if bodyStr, ok := exported.(string); ok {
-		return []byte(bodyStr), clearHeaders, nil
+		return []byte(bodyStr), clearHeaders, termination, nil
 	}
 
-	return payloadBytes, clearHeaders, nil
+	return payloadBytes, clearHeaders, termination, nil
+}
+
+// requestTerminationFromMap reads the downstream response a script returns with terminate set to true.
+func requestTerminationFromMap(objMap map[string]any) *requestTermination {
+	if terminate, _ := objMap["terminate"].(bool); !terminate {
+		return nil
+	}
+	termination := &requestTermination{headers: make(http.Header)}
+	// goja exports integral numbers as int64; other values leave the status unset so the host defaults to 403.
+	if statusCode, ok := objMap["status_code"].(int64); ok {
+		termination.statusCode = int(statusCode)
+	}
+	updateHeaderFromAny(termination.headers, objMap["response_headers"])
+	if responseBody, ok := objMap["response_body"].(string); ok {
+		termination.body = []byte(responseBody)
+	}
+	return termination
 }
 
 func (p *jsHandlerPlugin) applyJSAfterResponse(

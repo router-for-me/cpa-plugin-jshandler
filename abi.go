@@ -52,8 +52,8 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 var jsHandlerABIState = struct {
@@ -65,6 +65,13 @@ var jsHandlerABIState = struct {
 }{}
 
 const maxCGoBytesLen = C.size_t(1<<31 - 1)
+
+// jsHandlerSchemaVersion pins the RPC schema version advertised at registration.
+// Schema versions 3 and 5 omit the per-chunk request bodies and history chunks that
+// on_after_stream_response exposes to scripts, and hosts v7.2.8 through v7.2.102
+// reject schema versions newer than 1. Hosts honor request termination regardless
+// of the advertised schema version.
+const jsHandlerSchemaVersion uint32 = 1
 
 type abiEnvelope struct {
 	OK     bool            `json:"ok"`
@@ -254,7 +261,7 @@ func handleJSHandlerRegister(request []byte) ([]byte, error) {
 	jsHandlerABIState.shuttingDown = false
 	jsHandlerABIState.Unlock()
 	return abiOKEnvelope(abiRegistration{
-		SchemaVersion: pluginabi.SchemaVersion,
+		SchemaVersion: jsHandlerSchemaVersion,
 		Metadata:      plugin.Metadata,
 		Capabilities: abiCapabilities{
 			RequestInterceptor:     plugin.Capabilities.RequestInterceptor != nil,

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestApplyJSBeforeRequestUsesReturnedCtxBody(t *testing.T) {
@@ -25,7 +29,7 @@ function on_before_request(ctx) {
 
 	plugin := &jsHandlerPlugin{cfg: defaultJSHandlerConfig()}
 	headers := http.Header{"X-Plugin": []string{"original"}}
-	processed, _, errApply := plugin.applyJSRequestHook(
+	processed, _, termination, errApply := plugin.applyJSRequestHook(
 		scriptPath,
 		"on_before_request",
 		[]byte(`{"messages":[{"role":"user","content":"contains sensitive_word"}]}`),
@@ -37,6 +41,9 @@ function on_before_request(ctx) {
 	)
 	if errApply != nil {
 		t.Fatalf("applyJSRequestHook() error = %v", errApply)
+	}
+	if termination != nil {
+		t.Fatalf("applyJSRequestHook() termination = %#v, want nil", termination)
 	}
 	if body := string(processed); !strings.Contains(body, "safe_word") || strings.Contains(body, "sensitive_word") {
 		t.Fatalf("processed body = %q, want sensitive word rewritten", body)
@@ -69,7 +76,7 @@ function on_after_auth_request(ctx) {
 
 	plugin := &jsHandlerPlugin{cfg: defaultJSHandlerConfig()}
 	headers := http.Header{}
-	processed, _, errApply := plugin.applyJSRequestHook(
+	processed, _, _, errApply := plugin.applyJSRequestHook(
 		scriptPath,
 		"on_after_auth_request",
 		[]byte(`{"model":"gpt-test"}`),
@@ -87,6 +94,143 @@ function on_after_auth_request(ctx) {
 	}
 	if got := headers.Get("X-Protocol"); got != "openai_to_codex" {
 		t.Fatalf("header X-Protocol = %q, want openai_to_codex", got)
+	}
+}
+
+func TestApplyJSRequestHookReturnsTermination(t *testing.T) {
+	scriptPath := filepath.Join(t.TempDir(), "terminate.js")
+	script := `
+function on_before_request(ctx) {
+    ctx.terminate = true;
+    ctx.status_code = 429;
+    ctx.response_headers = { "Content-Type": "application/json", "Retry-After": "30" };
+    ctx.response_body = JSON.stringify({ error: { message: "blocked by jshandler" } });
+    return ctx;
+}
+`
+	if errWrite := os.WriteFile(scriptPath, []byte(script), 0600); errWrite != nil {
+		t.Fatalf("os.WriteFile() error = %v", errWrite)
+	}
+
+	plugin := &jsHandlerPlugin{cfg: defaultJSHandlerConfig()}
+	_, _, termination, errApply := plugin.applyJSRequestHook(
+		scriptPath,
+		"on_before_request",
+		[]byte(`{"model":"gpt-test"}`),
+		"gpt-test",
+		"openai",
+		"",
+		http.Header{},
+		"",
+	)
+	if errApply != nil {
+		t.Fatalf("applyJSRequestHook() error = %v", errApply)
+	}
+	if termination == nil {
+		t.Fatal("applyJSRequestHook() termination = nil, want termination")
+	}
+	if termination.statusCode != http.StatusTooManyRequests {
+		t.Fatalf("termination status = %d, want %d", termination.statusCode, http.StatusTooManyRequests)
+	}
+	if got := termination.headers.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("termination Content-Type = %q, want application/json", got)
+	}
+	if got := termination.headers.Get("Retry-After"); got != "30" {
+		t.Fatalf("termination Retry-After = %q, want 30", got)
+	}
+	if got := string(termination.body); got != `{"error":{"message":"blocked by jshandler"}}` {
+		t.Fatalf("termination body = %q", got)
+	}
+}
+
+func TestApplyJSRequestHookIgnoresInvalidTerminationFields(t *testing.T) {
+	tests := []struct {
+		name            string
+		result          string
+		wantTermination bool
+	}{
+		{name: "non-boolean terminate", result: `{ terminate: "true", status_code: 429 }`, wantTermination: false},
+		{name: "non-integer status", result: `{ terminate: true, status_code: 599.9 }`, wantTermination: true},
+		{name: "string status", result: `{ terminate: true, status_code: "429" }`, wantTermination: true},
+		{name: "invalid response fields", result: `{ terminate: true, response_headers: null, response_body: { error: "blocked" } }`, wantTermination: true},
+	}
+
+	plugin := &jsHandlerPlugin{cfg: defaultJSHandlerConfig()}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scriptPath := filepath.Join(t.TempDir(), "terminate.js")
+			script := "function on_before_request(ctx) { return " + tt.result + "; }\n"
+			if errWrite := os.WriteFile(scriptPath, []byte(script), 0600); errWrite != nil {
+				t.Fatalf("os.WriteFile() error = %v", errWrite)
+			}
+
+			_, _, termination, errApply := plugin.applyJSRequestHook(scriptPath, "on_before_request", nil, "gpt-test", "openai", "", http.Header{}, "")
+			if errApply != nil {
+				t.Fatalf("applyJSRequestHook() error = %v", errApply)
+			}
+			if (termination != nil) != tt.wantTermination {
+				t.Fatalf("applyJSRequestHook() termination = %#v, want termination %v", termination, tt.wantTermination)
+			}
+			if termination == nil {
+				return
+			}
+			if termination.statusCode != 0 {
+				t.Fatalf("termination status = %d, want 0 so the host defaults to 403", termination.statusCode)
+			}
+			if len(termination.headers) != 0 || termination.body != nil {
+				t.Fatalf("termination headers = %v, body = %q, want empty", termination.headers, termination.body)
+			}
+		})
+	}
+}
+
+func TestInterceptRequestStopsScriptChainOnTermination(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.js")
+	firstScript := `
+function on_after_auth_request(ctx) {
+    return { terminate: true, status_code: 403, response_body: "denied" };
+}
+`
+	secondPath := filepath.Join(dir, "second.js")
+	secondScript := `
+function on_after_auth_request(ctx) {
+    ctx.headers["X-Second-Script"] = "ran";
+    return ctx;
+}
+`
+	if errWrite := os.WriteFile(firstPath, []byte(firstScript), 0600); errWrite != nil {
+		t.Fatalf("os.WriteFile() error = %v", errWrite)
+	}
+	if errWrite := os.WriteFile(secondPath, []byte(secondScript), 0600); errWrite != nil {
+		t.Fatalf("os.WriteFile() error = %v", errWrite)
+	}
+
+	plugin := &jsHandlerPlugin{cfg: jsHandlerConfig{
+		ScriptPaths: []string{firstPath, secondPath},
+		Timeout:     time.Second,
+	}}
+	resp, errIntercept := plugin.InterceptRequestAfterAuth(context.Background(), pluginapi.RequestInterceptRequest{
+		SourceFormat: "openai",
+		ToFormat:     "codex",
+		Model:        "gpt-test",
+		Headers:      http.Header{},
+		Body:         []byte(`{"model":"gpt-test"}`),
+	})
+	if errIntercept != nil {
+		t.Fatalf("InterceptRequestAfterAuth() error = %v", errIntercept)
+	}
+	if !resp.Terminate {
+		t.Fatal("InterceptRequestAfterAuth() Terminate = false, want true")
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("InterceptRequestAfterAuth() StatusCode = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if got := string(resp.ResponseBody); got != "denied" {
+		t.Fatalf("InterceptRequestAfterAuth() ResponseBody = %q, want denied", got)
+	}
+	if got := resp.Headers.Get("X-Second-Script"); got != "" {
+		t.Fatalf("second script ran after termination, X-Second-Script = %q", got)
 	}
 }
 

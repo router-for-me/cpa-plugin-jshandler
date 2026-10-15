@@ -19,6 +19,7 @@ Copyright (c) 2026.6-present Router-For.ME
 ## Features
 
 - **Request Interception** (`on_before_request`, `on_after_auth_request`): Modify request payloads and headers before and after credential selection.
+- **Request Termination** (`on_before_request`, `on_after_auth_request`): Block a request and return a custom response without calling upstream.
 - **Response Interception** (`on_after_nonstream_response`): Modify non-streaming response bodies and headers.
 - **Stream Chunk Interception** (`on_after_stream_response`): Modify individual streaming chunks with read-only `history_chunks` context.
 - **Hot Reload**: Scripts are automatically reloaded when modified on disk.
@@ -129,6 +130,33 @@ Called after each streaming response chunk is received from upstream.
 ### Return Value
 
 Return the modified `ctx` object, or a plain string to replace the body/chunk.
+
+### Request Termination
+
+`on_before_request` and `on_after_auth_request` can block a request by returning an object (or the modified `ctx`) with `terminate: true`. CLIProxyAPI skips the upstream call and returns the provided response to the client. Remaining scripts and interceptors are not executed.
+
+```javascript
+function on_before_request(ctx) {
+    if (ctx.model === "blocked-model") {
+        return {
+            terminate: true,
+            status_code: 403,
+            response_headers: { "Content-Type": "application/json" },
+            response_body: JSON.stringify({ error: { message: "model is not allowed" } })
+        };
+    }
+    return ctx;
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `terminate` | boolean | Must be `true` to block the request |
+| `status_code` | integer | Response HTTP status; missing, non-integer, or outside `200`-`599` defaults to `403` |
+| `response_headers` | object | Response headers; `Content-Type` defaults to `application/json` |
+| `response_body` | string | Response body; use `JSON.stringify` for objects |
+
+Request termination requires CLIProxyAPI v7.2.103 or later. Older versions ignore these fields and forward the request.
 
 ## Built-in Scripts
 
