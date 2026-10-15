@@ -198,7 +198,7 @@ The GitHub Actions workflow builds plugin-store-compatible archives for:
 |------|--------|--------|
 | `linux` | `amd64` | `ubuntu-24.04` |
 | `linux` | `arm64` | `ubuntu-24.04-arm` |
-| `freebsd` | `amd64` | `go-cross/cgo-actions` on `ubuntu-24.04` |
+| `freebsd` | `amd64` | `clang` with a FreeBSD 14.4 sysroot on `ubuntu-24.04` |
 | `darwin` | `amd64` | `macos-15-intel` |
 | `darwin` | `arm64` | `macos-15` |
 | `windows` | `amd64` | `windows-2025` |

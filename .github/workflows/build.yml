@@ -184,6 +184,10 @@ jobs:
       matrix:
         include:
           - goarch: amd64
+            clang-arch: x86_64
+    env:
+      # Use a supported FreeBSD release; EOL releases are removed from download.freebsd.org.
+      FREEBSD_VERSION: "14.4"
     defaults:
       run:
         shell: bash
@@ -218,22 +222,24 @@ jobs:
 
       - name: Build FreeBSD shared library
         timeout-minutes: 45
-        uses: go-cross/cgo-actions@v1
-        env:
-          GOFLAGS: -trimpath -buildmode=c-shared
-        with:
-          dir: .
-          packages: .
-          targets: freebsd-${{ matrix.goarch }}
-          out-dir: dist/freebsd-${{ matrix.goarch }}
-          output: ${{ env.PLUGIN_ID }}.so
-          flags: -ldflags=-s -w
-          x-flags: main.pluginVersion=${{ steps.release_metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          SYSROOT="${RUNNER_TEMP}/freebsd-sysroot"
+          mkdir -p "${SYSROOT}" "dist/freebsd-${{ matrix.goarch }}"
+          wget -q -O "${RUNNER_TEMP}/base.txz" \
+            "https://download.freebsd.org/releases/${{ matrix.goarch }}/${FREEBSD_VERSION}-RELEASE/base.txz"
+          sudo tar -xf "${RUNNER_TEMP}/base.txz" -C "${SYSROOT}"
+          CGO_ENABLED=1 GOOS=freebsd GOARCH=${{ matrix.goarch }} \
+            CGO_LDFLAGS="-fuse-ld=lld" \
+            CC="clang --target=${{ matrix.clang-arch }}-unknown-freebsd${FREEBSD_VERSION} --sysroot=${SYSROOT}" \
+            go build -trimpath -buildmode=c-shared \
+              -ldflags "-s -w -X main.pluginVersion=${VERSION}" \
+              -o "dist/freebsd-${{ matrix.goarch }}/${PLUGIN_ID}.so" .
+          rm -f "dist/freebsd-${{ matrix.goarch }}/${PLUGIN_ID}.h"
 
       - name: Package plugin
         run: |
           set -euo pipefail
-          rm -f go-cross-bin.h "dist/freebsd-${{ matrix.goarch }}/${PLUGIN_ID}.h"
           go run ./.github/scripts/package-release.go \
             -library "dist/freebsd-${{ matrix.goarch }}/${PLUGIN_ID}.so" \
             -archive "${ARCHIVE_NAME}" \
